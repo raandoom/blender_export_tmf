@@ -58,7 +58,6 @@ class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
 
         return {'FINISHED'}
 
-
 ### REGISTER ###
 
 def menu_func(self, context):
@@ -213,7 +212,23 @@ class _3ds_uint(object):
 
     def __str__(self):
         return str(self.value)
-    
+
+class _3ds_float(object):
+    """Class representing a 4-byte IEEE floating point number for a 3ds file."""
+    __slots__ = ("value", )
+
+    def __init__(self, val):
+        self.value = val
+
+    def get_size(self):
+        return SZ_FLOAT
+
+    def write(self, file):
+        file.write(struct.pack("<f", self.value))
+
+    def __str__(self):
+        return str(self.value)
+
 class _3ds_string(object):
     """Class representing a zero-terminated string for a 3ds file."""
     __slots__ = ("value", )
@@ -228,7 +243,7 @@ class _3ds_string(object):
 
     def write(self, file):
         binary_format = "<%ds" % (len(self.value) + 1)
-        file.write(struct.pack(binary_format, self.value))
+        file.write(struct.pack(binary_format, self.value.encode('utf-8')))
 
     def __str__(self):
         return self.value
@@ -362,7 +377,7 @@ def make_kfdata(start=0, stop=0, curtime=0, rev=0):
     kfdata.add_subchunk(kfcurtime)
     return kfdata
 
-def do_export(filename):
+def do_export(filename,use_selection=True):
 
     """Save the Blender scene to a 3ds file."""
 
@@ -383,11 +398,100 @@ def do_export(filename):
     # init main key frame data chunk:
     kfdata = make_kfdata(0, 100, 0, 1)
 
+    # Make a list of all materials used in the selected meshes (use a dictionary,
+    # each material is added once):
+    materialDict = {}
+    mesh_objects = []
+
+    if use_selection:
+        objects = (ob for ob in sce.objects if ob.is_visible(sce) and ob.select)
+    else:
+        objects = (ob for ob in sce.objects if ob.is_visible(sce))
+
+    empty_objects = [ ob for ob in objects if ob.type == 'EMPTY' ]
+
+    for ob in objects:
+    # get derived objects
+        free, derived = create_derived_objects(scene, ob)
+
+        if derived is None:
+            continue
+
+        for ob_derived, mat in derived:
+            if ob.type not in {'MESH', 'CURVE', 'SURFACE', 'FONT', 'META'}:
+                continue
+
+            try:
+                data = ob_derived.to_mesh(scene, True, 'RENDER')
+            except:
+                data = None
+
+            if data:
+                # 4KEX: Removed mesh transformation. Will do this later based on parenting and other factors.
+                # so vertices are in local coordinates
+                # orig was the next line commented out
+                data.transform(mat)
+                # data.normal_update()
+                mesh_objects.append((ob_derived, data))
+                mat_ls = data.materials
+                mat_ls_len = len(mat_ls)
+                # get material/image tuples.
+                if data.faceUV:
+                    if not mat_ls:
+                        mat = mat_name = None
+
+                    for f in data.faces:
+                        if mat_ls:
+                            mat_index = f.mat
+                            if mat_index >= mat_ls_len:
+                                mat_index = f.mat = 0
+                            mat = mat_ls[mat_index]
+                            if mat: mat_name = mat.name
+                            else:   mat_name = None
+                        # else there alredy set to none
+
+                        img = f.image
+                        if img: img_name = img.name
+                        else:   img_name = None
+
+                        materialDict.setdefault((mat_name, img_name), (mat, img))
+
+                else:
+                    for mat in mat_ls:
+                        if mat: # material may be None so check its not.
+                            materialDict.setdefault((mat.name, None), (mat, None) )
+
+                    # Why 0 Why!
+                    for f in data.faces:
+                        if f.mat >= mat_ls_len:
+                            f.mat = 0
+
+    # Make material chunks for all materials used in the meshes:
+    for mat_and_image in materialDict.values():
+        object_info.add_subchunk(make_material_chunk(mat_and_image[0], mat_and_image[1]))
+
+    # 4KEX: Added MASTERSCALE element
+    mscale = _3ds_chunk(MASTERSCALE)
+    mscale.add_variable("scale", _3ds_float(1))
+    object_info.add_subchunk(mscale)
+
     #
     #
     #
     #
     #
+
+    # Create chunks for all empties:
+    # 4KEX: Re-enabled kfdata. Empty objects not tested yet.
+    for ob in empty_objects:
+        # Empties only require a kf object node:
+        kfdata.add_subchunk(make_kf_obj_node(ob, name_to_id, name_to_scale, name_to_pos, name_to_rot))
+
+    # Add main object info chunk to primary chunk:
+    primary.add_subchunk(object_info)
+
+    # 4KEX: Export kfdata
+    primary.add_subchunk(kfdata)
 
     # At this point, the chunk hierarchy is completely built.
 
