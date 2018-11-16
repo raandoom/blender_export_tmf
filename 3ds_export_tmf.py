@@ -32,6 +32,8 @@ import bpy
 import bpy_extras
 import time
 import struct
+import math
+import mathutils
 
 ###### EXPORT OPERATOR #######
 class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
@@ -174,6 +176,8 @@ def sane_name(name):
     name_mapping[name] = new_name = new_name.encode("ASCII", "replace")
     return new_name
 
+def uv_key(uv):
+    return round(uv[0], 6), round(uv[1], 6)
 
 # size defines:
 SZ_SHORT    = 2
@@ -192,7 +196,7 @@ class _3ds_ushort(object):
         return SZ_SHORT
 
     def write(self, file):
-        file.write(struct.pack("<H", self.value))
+        file.write(struct.pack("<H", self.value & 0xFFFF))
 
     def __str__(self):
         return str(self.value)
@@ -234,8 +238,6 @@ class _3ds_string(object):
     __slots__ = ("value", )
 
     def __init__(self, val=""):
-        print(val)
-        assert(type(val) == str)
         self.value = val
 
     def get_size(self):
@@ -243,10 +245,128 @@ class _3ds_string(object):
 
     def write(self, file):
         binary_format = "<%ds" % (len(self.value) + 1)
-        file.write(struct.pack(binary_format, self.value.encode('utf-8')))
+        file.write(struct.pack(binary_format, self.value))
 
     def __str__(self):
-        return self.value
+        return str(self.value)
+
+class _3ds_point_3d(object):
+    """Class representing a three-dimensional point for a 3ds file."""
+    __slots__ = "x", "y", "z"
+
+    def __init__(self, point = (0.0,0.0,0.0)):
+        self.x, self.y, self.z = point
+
+    def get_size(self):
+        return 3 * SZ_FLOAT
+
+    def write(self, file):
+        file.write(struct.pack('<3f', self.x, self.y, self.z))
+
+    def __str__(self):
+        return '(%f, %f, %f)' % (self.x, self.y, self.z)
+
+# Used for writing a track
+class _3ds_point_4d(object):
+    '''Class representing a four-dimensional point for a 3ds file, for instance a quaternion.'''
+    __slots__ = 'x','y','z','w'
+    def __init__(self, point=(0.0,0.0,0.0,0.0)):
+        self.x, self.y, self.z, self.w = point
+
+    def get_size(self):
+        return 4*SZ_FLOAT
+
+    def write(self,file):
+        data=struct.pack('<4f', self.x, self.y, self.z, self.w)
+        file.write(data)
+
+    def __str__(self):
+        return '(%f, %f, %f, %f)' % (self.x, self.y, self.z, self.w)
+
+class _3ds_point_uv(object):
+    """Class representing a UV-coordinate for a 3ds file."""
+    __slots__ = ("uv", )
+
+    def __init__(self, point):
+        self.uv = point
+
+    def get_size(self):
+        return 2 * SZ_FLOAT
+
+    def write(self, file):
+        data = struct.pack('<2f', self.uv[0], self.uv[1])
+        file.write(data)
+
+    def __str__(self):
+        return '(%g, %g)' % self.uv
+
+class _3ds_rgb_color(object):
+    """Class representing a (24-bit) rgb color for a 3ds file."""
+    __slots__ = "r", "g", "b"
+
+    def __init__(self, col):
+       self.r, self.g, self.b = col
+
+    def get_size(self):
+        return 3
+
+    def write(self, file):
+        file.write(struct.pack('<3B', int(255 * self.r), int(255 * self.g), int(255 * self.b)))
+
+    def __str__(self):
+        return '{%f, %f, %f}' % (self.r, self.g, self.b)
+
+class _3ds_face(object):
+    """Class representing a face for a 3ds file."""
+    __slots__ = ("vindex", )
+
+    def __init__(self, vindex):
+        self.vindex = vindex
+
+    def get_size(self):
+        return 4 * SZ_SHORT
+
+    # no need to validate every face vert. the oversized array will
+    # catch this problem
+
+    def write(self, file):
+        # The last zero is only used by 3d studio
+        file.write(struct.pack("<4H", self.vindex[0], self.vindex[1], self.vindex[2], 0))
+
+    def __str__(self):
+        return '[%d %d %d]' % (self.vindex[0], self.vindex[1], self.vindex[2])
+
+class _3ds_array(object):
+    """Class representing an array of variables for a 3ds file.
+
+    Consists of a _3ds_ushort to indicate the number of items, followed by the items themselves.
+    """
+    __slots__ = "values", "size"
+
+    def __init__(self):
+        self.values = []
+        self.size = SZ_SHORT
+
+    # add an item:
+    def add(self, item):
+        self.values.append(item)
+        self.size += item.get_size()
+
+    def get_size(self):
+        return self.size
+
+    def validate(self):
+        return len(self.values) <= 65535
+
+    def write(self, file):
+        _3ds_ushort(len(self.values)).write(file)
+        for value in self.values:
+            value.write(file)
+
+    # To not overwhelm the output in a dump, a _3ds_array only
+    # outputs the number of items, not all of the actual items.
+    def __str__(self):
+        return '(%d items)' % len(self.values)
 
 class _3ds_named_variable(object):
     """Convenience class for named variables."""
@@ -352,6 +472,366 @@ class _3ds_chunk(object):
 # EXPORT
 ######################################################
 
+def make_material_subchunk(id, color):
+    """Make a material subchunk."""
+    """Used for color subchunks, such as diffuse color or ambient color subchunks."""
+    mat_sub = _3ds_chunk(id)
+    col1 = _3ds_chunk(RGB1)
+    col1.add_variable("color1", _3ds_rgb_color(color));
+    mat_sub.add_subchunk(col1)
+# optional:
+    col2 = _3ds_chunk(RGB2)
+    col2.add_variable("color2", _3ds_rgb_color(color));
+    mat_sub.add_subchunk(col2)
+    return mat_sub
+
+def make_percent_subchunk(id, percentval):
+    # Make a percentage based subchunk
+    pct_sub = _3ds_chunk(id)
+    pct1 = _3ds_chunk(PCT)
+    pct1.add_variable("percent", _3ds_ushort(int(round(percentval*100,0))))
+    pct_sub.add_subchunk(pct1)
+    return pct_sub
+
+def make_material_chunk(material, image):
+    """Make a material chunk out of a blender material."""
+    material_chunk = _3ds_chunk(MATERIAL)
+    name = _3ds_chunk(MATNAME)
+
+    if material:
+        name_str = material.name
+    else:
+        name_str = 'None'
+    # 4KEX: Removed image name adding to material name
+    if image:
+        name_str += " " + image.name
+
+    name.add_variable("name", _3ds_string(sane_name(name_str)))
+    material_chunk.add_subchunk(name)
+
+    if not material:
+        material_chunk.add_subchunk(make_material_subchunk(MATAMBIENT, (0,0,0) ))
+        material_chunk.add_subchunk(make_material_subchunk(MATDIFFUSE, (.8, .8, .8) ))
+        material_chunk.add_subchunk(make_material_subchunk(MATSPECULAR, (1,1,1) ))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHINESS, .2))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHIN2, 1))
+        material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 0))
+
+    else:
+        material_chunk.add_subchunk(make_material_subchunk(MATAMBIENT, [a*material.ambient for a in material.diffuse_color] ))
+        material_chunk.add_subchunk(make_material_subchunk(MATDIFFUSE, material.diffuse_color))
+        material_chunk.add_subchunk(make_material_subchunk(MATSPECULAR, material.specular_color))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHINESS, material.roughness))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHIN2, material.specular_intensity))
+        material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 1-material.alpha))
+
+        # 4KEX: Removed call to get images for the material. Will export UV image ONLY.
+        #images = get_material_images(material) # can be None
+        images = []
+
+        if image: images.append(image)
+
+        if images:
+            material_chunk.add_subchunk(make_material_texture_chunk(MATMAP, images))
+
+    return material_chunk
+
+class tri_wrapper(object):
+    """Class representing a triangle.
+
+    Used when converting faces to triangles"""
+
+    __slots__ = "vertex_index", "mat", "image", "faceuvs", "offset"
+
+    def __init__(self, vindex=(0, 0, 0), mat=None, image=None, faceuvs=None):
+        self.vertex_index = vindex
+        self.mat = mat
+        self.image = image
+        self.faceuvs = faceuvs
+        self.offset = [0, 0, 0]  # offset indices
+
+def extract_triangles(mesh):
+    '''Extract triangles from a mesh.
+
+    If the mesh contains quads, they will be split into triangles.'''
+    tri_list = []
+    do_uv = mesh.tessface_uv_textures
+
+    if not do_uv:
+        face_uv = None
+
+    img = None
+    for i, face in enumerate(mesh.tessfaces):
+        f_v = face.vertices
+
+        uf = mesh.tessface_uv_textures.active.data[i] if do_uv else None
+
+        if do_uv:
+            f_uv = uf.uv
+            img = uf.image
+            if img: img = img.name
+
+        if len(f_v)==3:
+            new_tri = tri_wrapper((f_v[0], f_v[1], f_v[2]), face.material_index, img)
+            if (do_uv): new_tri.faceuvs= uv_key(f_uv[0]), uv_key(f_uv[1]), uv_key(f_uv[2])
+            tri_list.append(new_tri)
+
+        else: #it's a quad
+            new_tri = tri_wrapper((f_v[0], f_v[1], f_v[2]), face.material_index, img)
+            new_tri_2 = tri_wrapper((f_v[0], f_v[2], f_v[3]), face.material_index, img)
+
+            if (do_uv):
+                new_tri.faceuvs= uv_key(f_uv[0]), uv_key(f_uv[1]), uv_key(f_uv[2])
+                new_tri_2.faceuvs= uv_key(f_uv[0]), uv_key(f_uv[2]), uv_key(f_uv[3])
+
+            tri_list.append( new_tri )
+            tri_list.append( new_tri_2 )
+
+    return tri_list
+
+def remove_face_uv(verts, tri_list):
+    """Remove face UV coordinates from a list of triangles.
+
+    Since 3ds files only support one pair of uv coordinates for each vertex, face uv coordinates
+    need to be converted to vertex uv coordinates. That means that vertices need to be duplicated when
+    there are multiple uv coordinates per vertex."""
+
+    # initialize a list of UniqueLists, one per vertex:
+    #uv_list = [UniqueList() for i in xrange(len(verts))]
+    unique_uvs = [{} for i in range(len(verts))]
+
+    # for each face uv coordinate, add it to the UniqueList of the vertex
+    for tri in tri_list:
+        for i in range(3):
+            # store the index into the UniqueList for future reference:
+            # offset.append(uv_list[tri.vertex_index[i]].add(_3ds_point_uv(tri.faceuvs[i])))
+
+            context_uv_vert = unique_uvs[tri.vertex_index[i]]
+            uvkey = tri.faceuvs[i]
+
+            offset_index__uv_3ds = context_uv_vert.get(uvkey)
+
+            if not offset_index__uv_3ds:
+                offset_index__uv_3ds = context_uv_vert[uvkey] = len(context_uv_vert), _3ds_point_uv(uvkey)
+
+            tri.offset[i] = offset_index__uv_3ds[0]
+
+    # At this point, each vertex has a UniqueList containing every uv coordinate that is associated with it
+    # only once.
+
+    # Now we need to duplicate every vertex as many times as it has uv coordinates and make sure the
+    # faces refer to the new face indices:
+    vert_index = 0
+    vert_array = _3ds_array()
+    uv_array = _3ds_array()
+    index_list = []
+    for i, vert in enumerate(verts):
+        index_list.append(vert_index)
+
+        pt = _3ds_point_3d(vert.co)  # reuse, should be ok
+        uvmap = [None] * len(unique_uvs[i])
+        for ii, uv_3ds in unique_uvs[i].values():
+            # add a vertex duplicate to the vertex_array for every uv associated with this vertex:
+            vert_array.add(pt)
+            # add the uv coordinate to the uv array:
+            # This for loop does not give uv's ordered by ii, so we create a new map
+            # and add the uv's later
+            # uv_array.add(uv_3ds)
+            uvmap[ii] = uv_3ds
+
+        # Add the uv's in the correct order
+        for uv_3ds in uvmap:
+            # add the uv coordinate to the uv array:
+            uv_array.add(uv_3ds)
+
+        vert_index += len(unique_uvs[i])
+
+    # Make sure the triangle vertex indices now refer to the new vertex list:
+    for tri in tri_list:
+        for i in range(3):
+            tri.offset[i] += index_list[tri.vertex_index[i]]
+        tri.vertex_index = tri.offset
+
+    return vert_array, uv_array, tri_list
+
+def make_faces_chunk(tri_list, mesh, materialDict):
+    """Make a chunk for the faces.
+
+    Also adds subchunks assigning materials to all faces."""
+
+    materials = mesh.materials
+    if not materials:
+        mat = None
+
+    face_chunk = _3ds_chunk(OBJECT_FACES)
+    face_list = _3ds_array()
+
+    if mesh.tessface_uv_textures:
+        # Gather materials used in this mesh - mat/image pairs
+        unique_mats = {}
+        for i, tri in enumerate(tri_list):
+
+            face_list.add(_3ds_face(tri.vertex_index))
+
+            if materials:
+                mat = materials[tri.mat]
+                if mat:
+                    mat = mat.name
+
+            img = tri.image
+
+            try:
+                context_mat_face_array = unique_mats[mat, img][1]
+            except:
+                name_str = mat if mat else "None"
+                if img:
+                    name_str += img
+
+                context_mat_face_array = _3ds_array()
+                unique_mats[mat, img] = _3ds_string(sane_name(name_str)), context_mat_face_array
+
+            context_mat_face_array.add(_3ds_ushort(i))
+            # obj_material_faces[tri.mat].add(_3ds_ushort(i))
+
+        face_chunk.add_variable("faces", face_list)
+        for mat_name, mat_faces in unique_mats.values():
+            obj_material_chunk = _3ds_chunk(OBJECT_MATERIAL)
+            obj_material_chunk.add_variable("name", mat_name)
+            obj_material_chunk.add_variable("face_list", mat_faces)
+            face_chunk.add_subchunk(obj_material_chunk)
+
+    else:
+
+        obj_material_faces = []
+        obj_material_names = []
+        for m in materials:
+            if m:
+                obj_material_names.append(_3ds_string(sane_name(m.name)))
+                obj_material_faces.append(_3ds_array())
+        n_materials = len(obj_material_names)
+
+        for i, tri in enumerate(tri_list):
+            face_list.add(_3ds_face(tri.vertex_index))
+            if (tri.mat < n_materials):
+                obj_material_faces[tri.mat].add(_3ds_ushort(i))
+
+        face_chunk.add_variable("faces", face_list)
+        for i in range(n_materials):
+            obj_material_chunk = _3ds_chunk(OBJECT_MATERIAL)
+            obj_material_chunk.add_variable("name", obj_material_names[i])
+            obj_material_chunk.add_variable("face_list", obj_material_faces[i])
+            face_chunk.add_subchunk(obj_material_chunk)
+
+    return face_chunk
+
+def make_vert_chunk(vert_array):
+    """Make a vertex chunk out of an array of vertices."""
+    vert_chunk = _3ds_chunk(OBJECT_VERTICES)
+    vert_chunk.add_variable("vertices", vert_array)
+    return vert_chunk
+
+def make_uv_chunk(uv_array):
+    """Make a UV chunk out of an array of UVs."""
+    uv_chunk = _3ds_chunk(OBJECT_UV)
+    uv_chunk.add_variable("uv coords", uv_array)
+    return uv_chunk
+
+def make_mesh_chunk(mesh, materialDict, ob, name_to_id, name_to_scale, name_to_pos, name_to_rot):
+    '''Make a chunk out of a Blender mesh.'''
+
+    # Extract the triangles from the mesh:
+    tri_list = extract_triangles(mesh)
+
+    if mesh.tessface_uv_textures:
+        # Remove the face UVs and convert it to vertex UV:
+        vert_array, uv_array, tri_list = remove_face_uv(mesh.vertices, tri_list)
+    else:
+        # Add the vertices to the vertex array:
+        vert_array = _3ds_array()
+        for vert in mesh.vertices:
+            vert_array.add(_3ds_point_3d(vert.co))
+        # If the mesh has vertex UVs, create an array of UVs:
+        # if mesh.vertexUV:
+        #     uv_array = _3ds_array()
+        #     for vert in mesh.vertices:
+        #         uv_array.add(_3ds_point_uv(vert.uvco))
+        # else:
+        #     # no UV at all:
+        uv_array = None
+
+    # create the chunk:
+    mesh_chunk = _3ds_chunk(OBJECT_MESH)
+
+    # add vertex chunk:
+    mesh_chunk.add_subchunk(make_vert_chunk(vert_array))
+    # add faces chunk:
+
+    mesh_chunk.add_subchunk(make_faces_chunk(tri_list, mesh, materialDict))
+
+    mesh1 = _3ds_chunk(OBJECT_TRANS_MATRIX);
+
+    # 4KEX: 3DS mesh matrix. Apply the worldspace scale and positioning relative to the parent (if any).
+    if (ob.parent == None) or (ob.parent.name not in name_to_id):
+        matrix_pos = (name_to_pos[ob.name][0],name_to_pos[ob.name][1],name_to_pos[ob.name][2])
+        # this was originally
+        # matrix_pos = (-name_to_pos[ob.name][0],-name_to_pos[ob.name][1],-name_to_pos[ob.name][2])
+        # matrix_pos = (0.0,0.0,0.0)
+    else:
+        # this code has been left as found, Glauco Bacchi
+        matrix_pos = mathutils.Vector((name_to_pos[ob.parent.name][0]-name_to_pos[ob.name][0],name_to_pos[ob.parent.name][1]-name_to_pos[ob.name][1],name_to_pos[ob.parent.name][2]-name_to_pos[ob.name][2] )) * name_to_rot[ob.parent.name].toMatrix()
+
+    ob_matrix = mathutils.Matrix()
+    ob_matrix.identity()
+    ob_matrix.resize_4x4()
+    ob_matrix[3][0] = matrix_pos[0]
+    ob_matrix[3][1] = matrix_pos[1]
+    ob_matrix[3][2] = matrix_pos[2]
+
+    # the original code is below but results in incorrect placement of the object when key frame data not output zzz
+    # ob_matrix[0][0] = 1.0/name_to_scale[ob.name][0]
+    # ob_matrix[1][1] = 1.0/name_to_scale[ob.name][1]
+    # ob_matrix[2][2] = 1.0/name_to_scale[ob.name][2]
+
+    #calculate the componenets of the transformation matrix from the rotation (parents zzz)
+    # i think this should have scaling data included but everything works well for tmu as it stands zzz
+
+    oneMinusCos = 1.0-math.cos(name_to_rot[ob.name].angle)
+    sinAngle = math.sin(name_to_rot[ob.name].angle)
+    cosAngle = math.cos(name_to_rot[ob.name].angle)
+
+    ob_matrix[0][0] = cosAngle + oneMinusCos*(name_to_rot[ob.name].axis[0])*(name_to_rot[ob.name].axis[0])
+    ob_matrix[0][1] = oneMinusCos*(name_to_rot[ob.name].axis[1])*(name_to_rot[ob.name].axis[0]) - (name_to_rot[ob.name].axis[2])* sinAngle
+    ob_matrix[0][2] = oneMinusCos*(name_to_rot[ob.name].axis[2])*(name_to_rot[ob.name].axis[0]) + (name_to_rot[ob.name].axis[1])* sinAngle
+
+    ob_matrix[1][0] = oneMinusCos*(name_to_rot[ob.name].axis[0])*(name_to_rot[ob.name].axis[1]) + (name_to_rot[ob.name].axis[2])* sinAngle
+    ob_matrix[1][1] = cosAngle + oneMinusCos*(name_to_rot[ob.name].axis[1])*(name_to_rot[ob.name].axis[1])
+    ob_matrix[1][2] = oneMinusCos*(name_to_rot[ob.name].axis[2])*(name_to_rot[ob.name].axis[1]) - (name_to_rot[ob.name].axis[0])* sinAngle
+
+    ob_matrix[2][0] = oneMinusCos*(name_to_rot[ob.name].axis[0])*(name_to_rot[ob.name].axis[2]) - (name_to_rot[ob.name].axis[1])* sinAngle
+    ob_matrix[2][1] = oneMinusCos*(name_to_rot[ob.name].axis[1])*(name_to_rot[ob.name].axis[2]) + (name_to_rot[ob.name].axis[0])* sinAngle
+    ob_matrix[2][2] = cosAngle + oneMinusCos*(name_to_rot[ob.name].axis[2])*(name_to_rot[ob.name].axis[2])
+
+    mesh1.add_variable("w1", _3ds_float(ob_matrix[0][0]))
+    mesh1.add_variable("w2", _3ds_float(ob_matrix[0][1]))
+    mesh1.add_variable("w3", _3ds_float(ob_matrix[0][2]))
+    mesh1.add_variable("x1", _3ds_float(ob_matrix[1][0]))
+    mesh1.add_variable("x2", _3ds_float(ob_matrix[1][1]))
+    mesh1.add_variable("x3", _3ds_float(ob_matrix[1][2]))
+    mesh1.add_variable("y1", _3ds_float(ob_matrix[2][0]))
+    mesh1.add_variable("y2", _3ds_float(ob_matrix[2][1]))
+    mesh1.add_variable("y3", _3ds_float(ob_matrix[2][2]))
+    mesh1.add_variable("z1", _3ds_float(ob_matrix[3][0]))
+    mesh1.add_variable("z2", _3ds_float(ob_matrix[3][1]))
+    mesh1.add_variable("z3", _3ds_float(ob_matrix[3][2]))
+
+    mesh_chunk.add_subchunk(mesh1)
+
+    # if available, add uv chunk:
+    if uv_array:
+        mesh_chunk.add_subchunk(make_uv_chunk(uv_array))
+
+    return mesh_chunk
+
 # COMMENTED OUT FOR 2.42 RELEASE!! CRASHES 3DS MAX
 def make_kfdata(start=0, stop=0, curtime=0, rev=0):
     """Make the basic keyframe data chunk"""
@@ -362,7 +842,7 @@ def make_kfdata(start=0, stop=0, curtime=0, rev=0):
     # Not really sure what filename is used for, but it seems it is usually used
     # to identify the program that generated the .3ds:
     # 4KEX: Based on observations some sample 3DS files typically used start stop of 100 with curtime = 0
-    kfhdr.add_variable("filename", _3ds_string("Blender"))
+    kfhdr.add_variable("filename", _3ds_string(b'Blender'))
     kfhdr.add_variable("animlen", _3ds_uint(stop - start))
 
     kfseg = _3ds_chunk(KFDATA_KFSEG)
@@ -376,6 +856,120 @@ def make_kfdata(start=0, stop=0, curtime=0, rev=0):
     kfdata.add_subchunk(kfseg)
     kfdata.add_subchunk(kfcurtime)
     return kfdata
+
+def make_track_chunk(ID, obj, obj_size, obj_pos, obj_rot):
+    '''Make a chunk for track data.
+
+    Depending on the ID, this will construct a position, rotation or scale track.'''
+    track_chunk = _3ds_chunk(ID)
+    track_chunk.add_variable("track_flags", _3ds_ushort())
+    track_chunk.add_variable("unknown", _3ds_uint(0))
+    track_chunk.add_variable("unknown", _3ds_uint(0))
+    track_chunk.add_variable("nkeys", _3ds_uint(1))
+    # Next section should be repeated for every keyframe, but for now, animation is not actually supported.
+    track_chunk.add_variable("tcb_frame", _3ds_uint(0))
+    track_chunk.add_variable("tcb_flags", _3ds_ushort())
+
+    # 4KEX: New method simply inserts the parameter pos/rotation/scale
+    if ID==POS_TRACK_TAG:
+        # position vector:
+        track_chunk.add_variable("position", _3ds_point_3d(obj_pos))
+    elif ID==ROT_TRACK_TAG:
+        # rotation (angle first [in radians], followed by axis):
+        track_chunk.add_variable("rotation", _3ds_point_4d((obj_rot.angle, obj_rot.axis[0], obj_rot.axis[1], obj_rot.axis[2])))
+    elif ID==SCL_TRACK_TAG:
+        # scale vector:
+        track_chunk.add_variable("scale", _3ds_point_3d(obj_size))
+
+
+
+    '''
+    # 4KEX: Eventually add bounding box. So far has not caused any problems.
+    bb = _3ds_chunk(BOUNDBOX)
+    bb.add_variable("minx",
+    '''
+
+    return track_chunk
+
+def make_kf_obj_node(obj, name_to_id, name_to_scale, name_to_pos, name_to_rot):
+    '''Make a node chunk for a Blender object.
+
+    Takes the Blender object as a parameter. Object id's are taken from the dictionary name_to_id.
+    Blender Empty objects are converted to dummy nodes.'''
+
+    name = obj.name
+    # main object node chunk:
+    kf_obj_node = _3ds_chunk(KFDATA_OBJECT_NODE_TAG)
+    # chunk for the object id:
+    obj_id_chunk = _3ds_chunk(OBJECT_NODE_ID)
+    # object id is from the name_to_id dictionary:
+    obj_id_chunk.add_variable("node_id", _3ds_ushort(name_to_id[name]))
+
+    # object node header:
+    obj_node_header_chunk = _3ds_chunk(OBJECT_NODE_HDR)
+    # object name:
+    if obj.type == 'Empty' and False:	#Forcing to use the real name for empties 4KEX
+        # Empties are called "$$$DUMMY" and use the OBJECT_INSTANCE_NAME chunk
+        # for their 3name (see below):
+        obj_node_header_chunk.add_variable("name", _3ds_string("$$$DUMMY"))
+    else:
+        # Add the name:
+        obj_node_header_chunk.add_variable("name", _3ds_string(sane_name(name)))
+    # Add Flag variables (not sure what they do):
+    # 4KEX: Based on observation flags1 is usually 0x0040
+    obj_node_header_chunk.add_variable("flags1", _3ds_ushort(0x0040))
+    obj_node_header_chunk.add_variable("flags2", _3ds_ushort(0))
+
+    # Check parent-child relationships:
+    parent = obj.parent
+    if (parent == None) or (parent.name not in name_to_id):
+        # If no parent, or the parents name is not in the name_to_id dictionary,
+        # parent id becomes -1:
+        obj_node_header_chunk.add_variable("parent", _3ds_ushort(-1))
+    else:
+        # Get the parent's id from the name_to_id dictionary:
+        obj_node_header_chunk.add_variable("parent", _3ds_ushort(name_to_id[parent.name]))
+
+    # add subchunks for object id and node header:
+    kf_obj_node.add_subchunk(obj_id_chunk)
+    kf_obj_node.add_subchunk(obj_node_header_chunk)
+
+    # 4KEX: Add a pivot point at the object centre
+    if (parent == None) or (parent.name not in name_to_id):
+        pivot_pos = (0.0,0.0,0.0)
+        # this was originally as follows, Glauco Bacchi
+        # pivot_pos = (name_to_pos[name][0],name_to_pos[name][1],name_to_pos[name][2])
+    else:
+        pivot_pos = Blender.Mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) * name_to_rot[parent.name].toMatrix()
+    obj_pivot_chunk = _3ds_chunk(OBJECT_PIVOT)
+    obj_pivot_chunk.add_variable("pivot", _3ds_point_3d(pivot_pos))
+    kf_obj_node.add_subchunk(obj_pivot_chunk)
+
+    # Empty objects need to have an extra chunk for the instance name:
+    if obj.type == 'Empty' and False:	#Will use a real object name for empties for now 4KEX
+        obj_instance_name_chunk = _3ds_chunk(OBJECT_INSTANCE_NAME)
+        obj_instance_name_chunk.add_variable("name", _3ds_string(sane_name(name)))
+        kf_obj_node.add_subchunk(obj_instance_name_chunk)
+
+    # Add track chunks for position, rotation and scale:
+    # 4KEX: Compute the position and rotation of the object centre
+    # 4KEX: The mesh has already been positioned around the object centre and scaled appropriately
+    if (parent == None) or (parent.name not in name_to_id):
+        # this was as I found it and works for TMU
+        # but means we do not apply any scaling at all, Glauco Bacchi
+        obj_size = (1.0,1.0,1.0)
+        obj_pos = name_to_pos[name]
+        obj_rot = name_to_rot[name]
+    else:
+        obj_size = (1.0,1.0,1.0)
+        obj_pos = Blender.Mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) * name_to_rot[parent.name].toMatrix()
+        obj_rot = Blender.Mathutils.CrossQuats( name_to_rot[name], name_to_rot[parent.name].copy().inverse() )
+
+    kf_obj_node.add_subchunk(make_track_chunk(SCL_TRACK_TAG, obj, obj_size, obj_pos, obj_rot))
+    kf_obj_node.add_subchunk(make_track_chunk(ROT_TRACK_TAG, obj, obj_size, obj_pos, obj_rot))
+    kf_obj_node.add_subchunk(make_track_chunk(POS_TRACK_TAG, obj, obj_size, obj_pos, obj_rot))
+
+    return kf_obj_node
 
 def do_export(filename,use_selection=True):
 
@@ -404,15 +998,15 @@ def do_export(filename,use_selection=True):
     mesh_objects = []
 
     if use_selection:
-        objects = (ob for ob in sce.objects if ob.is_visible(sce) and ob.select)
+        objects = [ob for ob in sce.objects if ob.is_visible(sce) and ob.select]
     else:
-        objects = (ob for ob in sce.objects if ob.is_visible(sce))
+        objects = [ob for ob in sce.objects if ob.is_visible(sce)]
 
     empty_objects = [ ob for ob in objects if ob.type == 'EMPTY' ]
 
     for ob in objects:
-    # get derived objects
-        free, derived = create_derived_objects(scene, ob)
+        # get derived objects
+        free, derived = bpy_extras.io_utils.create_derived_objects(sce, ob)
 
         if derived is None:
             continue
@@ -422,7 +1016,7 @@ def do_export(filename,use_selection=True):
                 continue
 
             try:
-                data = ob_derived.to_mesh(scene, True, 'RENDER')
+                data = ob_derived.to_mesh(sce, True, 'RENDER')
             except:
                 data = None
 
@@ -436,21 +1030,21 @@ def do_export(filename,use_selection=True):
                 mat_ls = data.materials
                 mat_ls_len = len(mat_ls)
                 # get material/image tuples.
-                if data.faceUV:
+                if data.tessface_uv_textures:
                     if not mat_ls:
                         mat = mat_name = None
 
-                    for f in data.faces:
+                    for f, uf in zip(data.tessfaces, data.tessface_uv_textures.active.data):
                         if mat_ls:
-                            mat_index = f.mat
+                            mat_index = f.material_index
                             if mat_index >= mat_ls_len:
-                                mat_index = f.mat = 0
+                                mat_index = f.material_index = 0
                             mat = mat_ls[mat_index]
                             if mat: mat_name = mat.name
                             else:   mat_name = None
                         # else there alredy set to none
 
-                        img = f.image
+                        img = uf.image
                         if img: img_name = img.name
                         else:   img_name = None
 
@@ -462,9 +1056,15 @@ def do_export(filename,use_selection=True):
                             materialDict.setdefault((mat.name, None), (mat, None) )
 
                     # Why 0 Why!
-                    for f in data.faces:
-                        if f.mat >= mat_ls_len:
-                            f.mat = 0
+                    for f in data.tessfaces:
+                        if f.material_index >= mat_ls_len:
+                            f.material_index = 0
+
+                            if free:
+                                free_derived_objects(ob)
+
+        if free:
+            free_derived_objects(ob)
 
     # Make material chunks for all materials used in the meshes:
     for mat_and_image in materialDict.values():
@@ -475,11 +1075,46 @@ def do_export(filename,use_selection=True):
     mscale.add_variable("scale", _3ds_float(1))
     object_info.add_subchunk(mscale)
 
-    #
-    #
-    #
-    #
-    #
+    # Give all objects a unique ID and build a dictionary from object name to object id:
+    name_to_id = {}
+    name_to_scale = {}
+    name_to_pos = {}
+    name_to_rot = {}
+    for ob, data in mesh_objects:
+        name_to_id[ob.name]= len(name_to_id)
+        name_to_scale[ob.name] = ob.dimensions
+        name_to_pos[ob.name] = ob.location
+        name_to_rot[ob.name] = ob.rotation_euler
+
+        # applying toquat() produces angle and axis properties
+        # but blender rotates the other way so need to inverse this too
+        name_to_rot[ob.name] = name_to_rot[ob.name].to_quaternion().inverted()
+
+    for ob in empty_objects:
+        name_to_id[ob.name]= len(name_to_id)
+        name_to_scale[ob.name] = ob.dimensions
+        name_to_pos[ob.name] = ob.location
+        name_to_rot[ob.name] = ob.rotation_euler
+
+        name_to_rot[ob.name] = name_to_rot[ob.name].to_quaternion().inverted()
+
+    # Create object chunks for all meshes:
+    i = 0
+    for ob, blender_mesh in mesh_objects:
+        # create a new object chunk
+        object_chunk = _3ds_chunk(OBJECT)
+
+        # set the object name
+        object_chunk.add_variable("name", _3ds_string(sane_name(ob.name)))
+
+        # make a mesh chunk out of the mesh:
+        object_chunk.add_subchunk(make_mesh_chunk(blender_mesh, materialDict, ob, name_to_id, name_to_scale, name_to_pos, name_to_rot))
+        object_info.add_subchunk(object_chunk)
+
+        # 4KEX: export kfdata node
+        kfdata.add_subchunk(make_kf_obj_node(ob, name_to_id, name_to_scale, name_to_pos, name_to_rot))
+        # blender_mesh.vertices = None
+        i+=i
 
     # Create chunks for all empties:
     # 4KEX: Re-enabled kfdata. Empty objects not tested yet.
