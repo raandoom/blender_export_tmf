@@ -42,6 +42,16 @@ class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     bl_label = "Export 3DS for TMF (.3ds)"
 
     filename_ext = ".3ds"
+    filter_glob = bpy.props.StringProperty(
+        default="*.3ds",
+        options={'HIDDEN'},
+        )
+    
+    use_selection = bpy.props.BoolProperty(
+        name="Selection Only",
+        description="Export selected objects only",
+        default=False,
+        )
 
     def execute(self, context):
         start_time = time.time()
@@ -51,7 +61,7 @@ class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
         filepath = bpy.path.ensure_ext(filepath, self.filename_ext)
 
         bpy.context.window.cursor_set('WAIT')
-        exported = do_export(filepath)
+        exported = do_export(filepath,use_selection)
         bpy.context.window.cursor_set('DEFAULT')
 
         if exported:
