@@ -54,6 +54,10 @@ class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
         )
 
     def execute(self, context):
+
+        keywords = self.as_keywords()
+        print(keywords)
+
         start_time = time.time()
         print('\n_____START_____')
         props = self.properties
@@ -61,7 +65,7 @@ class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
         filepath = bpy.path.ensure_ext(filepath, self.filename_ext)
 
         bpy.context.window.cursor_set('WAIT')
-        exported = do_export(filepath,use_selection)
+        exported = do_export(filepath,keywords["use_selection"])
         bpy.context.window.cursor_set('DEFAULT')
 
         if exported:
