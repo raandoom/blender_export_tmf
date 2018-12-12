@@ -34,6 +34,7 @@ import time
 import struct
 import math
 import mathutils
+import bmesh
 
 ###### EXPORT OPERATOR #######
 class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
@@ -147,6 +148,7 @@ OBJECT_VERTICES         = 0x4110  # The objects vertices
 OBJECT_FACES            = 0x4120  # The objects faces
 OBJECT_MATERIAL         = 0x4130  # This is found if the object has a material, either texture map or color
 OBJECT_UV               = 0x4140  # The UV texture coordinates
+OBJECT_SMOOTH           = 0x4150  # Smooth group
 OBJECT_TRANS_MATRIX     = 0x4160  # The Object Matrix
 
 #>------ sub defines of KFDATA
@@ -226,7 +228,7 @@ class _3ds_uint(object):
         return SZ_INT
 
     def write(self, file):
-        file.write(struct.pack("<I", self.value))
+        file.write(struct.pack("<I", self.value & 0xFFFFFFFF))
 
     def __str__(self):
         return str(self.value)
@@ -550,29 +552,99 @@ def make_material_chunk(material, image):
 
     return material_chunk
 
+##### SMOOTH GROUP #############################################################
+
+def msb(x):
+    return x.bit_length() - 1
+
+def lsb(x):
+    return msb(x & -x)
+
+def has_sharp_edge(f) :
+    for e in f.edges :
+        if not e.smooth :
+            return True
+
+    return False
+
+def not_allowed_mask(f,smg) :
+    mask = 0
+    for e in f.edges :
+        if not e.smooth :
+            for l in e.link_faces :
+                if f.index != l.index :
+                    mask |= l[smg]
+
+    return mask
+
+def set_smooth_group(f,smg,group) :
+    f[smg] = group
+    for e in f.edges :
+        if e.smooth :
+            for l in e.link_faces :
+                if f.index != l.index :
+                    l[smg] = l[smg] | group
+
+def calc_smooth_group(bm) :
+    '''Calculate smoothing groups'''
+
+    bm.faces.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    # face must have some group, 0 is not allowed here
+    smg = bm.faces.layers.int.new("smooth_group_current")
+
+    # assign common group for smooth faces
+    for f in bm.faces :    
+        if not has_sharp_edge(f) :
+            # assign any group
+            f[smg] = 1
+
+    for f in bm.faces :
+        if has_sharp_edge(f) :
+            not_mask = not_allowed_mask(f,smg)
+            group = 1 << lsb(0xFFFFFFFF & ~not_mask)
+            set_smooth_group(f,smg,group)
+
+################################################################################
+
 class tri_wrapper(object):
     """Class representing a triangle.
 
     Used when converting faces to triangles"""
 
-    __slots__ = "vertex_index", "mat", "image", "faceuvs", "offset"
+    __slots__ = "vertex_index", "mat", "image", "faceuvs", "offset", "group"
 
-    def __init__(self, vindex=(0, 0, 0), mat=None, image=None, faceuvs=None):
+    def __init__(self, vindex=(0, 0, 0), mat=None, image=None, faceuvs=None, group=0):
         self.vertex_index = vindex
         self.mat = mat
         self.image = image
         self.faceuvs = faceuvs
         self.offset = [0, 0, 0]  # offset indices
+        self.group = group
 
 def extract_triangles(mesh):
     '''Extract triangles from a mesh.
 
     If the mesh contains quads, they will be split into triangles.'''
+
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+
+    calc_smooth_group(bm)
+
+    # face must have some group, 0 is not allowed here
+    smg_cr = bm.faces.layers.int["smooth_group_current"]
+
     tri_list = []
     do_uv = mesh.tessface_uv_textures
 
     if not do_uv:
         face_uv = None
+
+    print("bm.faces len = ",len(bm.faces),
+    "tessfaces len = ",len(mesh.tessfaces),
+    "bmesh tess len = ",len(bm.calc_tessface()),
+    "polygons = ",len(mesh.polygons))
 
     img = None
     for i, face in enumerate(mesh.tessfaces):
@@ -585,9 +657,12 @@ def extract_triangles(mesh):
             img = uf.image
             if img: img = img.name
 
+        smooth_group = bm.faces[face.index][smg_cr]
+
         if len(f_v)==3:
             new_tri = tri_wrapper((f_v[0], f_v[1], f_v[2]), face.material_index, img)
-            if (do_uv): new_tri.faceuvs= uv_key(f_uv[0]), uv_key(f_uv[1]), uv_key(f_uv[2])
+            if (do_uv): new_tri.faceuvs = uv_key(f_uv[0]), uv_key(f_uv[1]), uv_key(f_uv[2])
+            new_tri.group = smooth_group
             tri_list.append(new_tri)
 
         else: #it's a quad
@@ -597,9 +672,14 @@ def extract_triangles(mesh):
             if (do_uv):
                 new_tri.faceuvs= uv_key(f_uv[0]), uv_key(f_uv[1]), uv_key(f_uv[2])
                 new_tri_2.faceuvs= uv_key(f_uv[0]), uv_key(f_uv[2]), uv_key(f_uv[3])
+                
+            new_tri.group = smooth_group
+            new_tri_2.group = smooth_group
 
             tri_list.append( new_tri )
             tri_list.append( new_tri_2 )
+            
+    bm.free()
 
     return tri_list
 
@@ -735,6 +815,11 @@ def make_faces_chunk(tri_list, mesh, materialDict):
             obj_material_chunk.add_variable("name", obj_material_names[i])
             obj_material_chunk.add_variable("face_list", obj_material_faces[i])
             face_chunk.add_subchunk(obj_material_chunk)
+
+    smooth_chunk = _3ds_chunk(OBJECT_SMOOTH)
+    for i, tri in enumerate(tri_list) :
+        smooth_chunk.add_variable("face_" + str(i),_3ds_uint(tri.group))
+    face_chunk.add_subchunk(smooth_chunk)
 
     return face_chunk
 
@@ -985,7 +1070,7 @@ def make_kf_obj_node(obj, name_to_id, name_to_scale, name_to_pos, name_to_rot):
 
     return kf_obj_node
 
-def do_export(filename,use_selection=True):
+def do_export(filename,use_selection=False):
 
     """Save the Blender scene to a 3ds file."""
 
@@ -1073,9 +1158,6 @@ def do_export(filename,use_selection=True):
                     for f in data.tessfaces:
                         if f.material_index >= mat_ls_len:
                             f.material_index = 0
-
-                            if free:
-                                free_derived_objects(ob)
 
         if free:
             free_derived_objects(ob)
