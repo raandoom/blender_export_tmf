@@ -18,7 +18,7 @@
 
 bl_info = {
     "name": "Export 3DS for TrackMania Forever",
-    "author": "Glauco Bacchi, Campbell Barton, Bob Holcomb, Richard Lärkäng, Damien McGinnes, Mark Stijnman",
+    "author": "Glauco Bacchi, Campbell Barton, Bob Holcomb, Richard Lärkäng, Damien McGinnes, Mark Stijnman, Sergey Savkin",
     "version": (1, 0, 0),
     "blender": (2, 7, 9),
     "location": "File > Export > 3DS for TMF (.3ds)",
@@ -57,7 +57,6 @@ class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     def execute(self, context):
 
         keywords = self.as_keywords()
-        print(keywords)
 
         start_time = time.time()
         print('\n_____START_____')
@@ -590,6 +589,7 @@ def calc_smooth_group(bm) :
 
     bm.faces.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
+    bm.verts.ensure_lookup_table()
     # face must have some group, 0 is not allowed here
     smg = bm.faces.layers.int.new("smooth_group_current")
 
@@ -604,6 +604,29 @@ def calc_smooth_group(bm) :
             not_mask = not_allowed_mask(f,smg)
             group = 1 << lsb(0xFFFFFFFF & ~not_mask)
             set_smooth_group(f,smg,group)
+
+# Too slow
+def tessface_polygon_index(mesh,tess) :
+    for po in mesh.polygons :
+        if set(tess.vertices).issubset(po.vertices) :
+            return True,po.index
+    return False,0
+# Faster
+def tessface_bmface_index(bm,mesh,tess) :
+    # Take any point from tessface and iterate over linked faces of BMVert
+    for bv in bm.verts :
+        if bv.co == tess.vertices[0] :
+            for bf in bv.link_faces :
+                if set(tess.vertices).issubset(mesh.polygons[bf.index].vertices) :
+                    return True,bf.index
+    return False,0
+# Fastest
+def tessface_vert_index(bm,mesh,tess) :
+    for bf in bm.verts[tess.vertices[0]].link_faces :
+        if set(tess.vertices).issubset(mesh.polygons[bf.index].vertices) :
+            return True,bf.index
+    return False,0
+        
 
 ################################################################################
 
@@ -641,11 +664,6 @@ def extract_triangles(mesh):
     if not do_uv:
         face_uv = None
 
-    print("bm.faces len = ",len(bm.faces),
-    "tessfaces len = ",len(mesh.tessfaces),
-    "bmesh tess len = ",len(bm.calc_tessface()),
-    "polygons = ",len(mesh.polygons))
-
     img = None
     for i, face in enumerate(mesh.tessfaces):
         f_v = face.vertices
@@ -657,7 +675,12 @@ def extract_triangles(mesh):
             img = uf.image
             if img: img = img.name
 
-        smooth_group = bm.faces[face.index][smg_cr]
+        # find parent polygon for tessface
+        # p_found, p_index = tessface_polygon_index(mesh,face)
+        # p_found, p_index = tessface_bmface_index(bm,mesh,face)
+        p_found, p_index = tessface_vert_index(bm,mesh,face)
+
+        smooth_group = bm.faces[p_index][smg_cr] if p_found else 0
 
         if len(f_v)==3:
             new_tri = tri_wrapper((f_v[0], f_v[1], f_v[2]), face.material_index, img)
@@ -1244,5 +1267,4 @@ def do_export(filename,use_selection=False):
     return True
 
 if __name__ == "__main__":
-    register()
     do_export("/tmp/tmf_export.3ds")
