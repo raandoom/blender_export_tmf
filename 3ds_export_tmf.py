@@ -47,7 +47,7 @@ class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
         default="*.3ds",
         options={'HIDDEN'},
         )
-    
+
     use_selection = bpy.props.BoolProperty(
         name="Selection Only",
         description="Export selected objects only",
@@ -508,6 +508,22 @@ def make_percent_subchunk(id, percentval):
     pct_sub.add_subchunk(pct1)
     return pct_sub
 
+def make_material_texture_chunk(id, images):
+    """ Make Material Map texture chunk """
+    # 4KEX: Add texture percentage value (100 = 1.0)
+    mat_sub = make_percent_subchunk(id, 1)
+
+    def add_image(img):
+        filename = img.filename.split('\\')[-1].split('/')[-1]
+        mat_sub_file = _3ds_chunk(MATMAPFILE)
+        mat_sub_file.add_variable("mapfile", _3ds_string(sane_name(filename)))
+        mat_sub.add_subchunk(mat_sub_file)
+
+    for image in images:
+        add_image(image)
+
+    return mat_sub
+
 def make_material_chunk(material, image):
     """Make a material chunk out of a blender material."""
     material_chunk = _3ds_chunk(MATERIAL)
@@ -519,7 +535,7 @@ def make_material_chunk(material, image):
         name_str = 'None'
     # 4KEX: Removed image name adding to material name
     if image:
-        name_str += " " + image.name
+        name_str += image.name
 
     name.add_variable("name", _3ds_string(sane_name(name_str)))
     material_chunk.add_subchunk(name)
@@ -541,7 +557,7 @@ def make_material_chunk(material, image):
         material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 1-material.alpha))
 
         # 4KEX: Removed call to get images for the material. Will export UV image ONLY.
-        #images = get_material_images(material) # can be None
+        # images = get_material_images(material) # can be None
         images = []
 
         if image: images.append(image)
@@ -626,7 +642,6 @@ def tessface_vert_index(bm,mesh,tess) :
         if set(tess.vertices).issubset(mesh.polygons[bf.index].vertices) :
             return True,bf.index
     return False,0
-        
 
 ################################################################################
 
