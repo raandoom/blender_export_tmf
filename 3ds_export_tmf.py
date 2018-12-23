@@ -569,6 +569,7 @@ def make_material_chunk(material, image):
 
 ##### SMOOTH GROUP #############################################################
 
+'''
 def msb(x):
     return x.bit_length() - 1
 
@@ -601,7 +602,7 @@ def set_smooth_group(f,smg,group) :
                     l[smg] = l[smg] | group
 
 def calc_smooth_group(bm) :
-    '''Calculate smoothing groups'''
+    """Calculate smoothing groups"""
 
     bm.faces.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
@@ -620,6 +621,7 @@ def calc_smooth_group(bm) :
             not_mask = not_allowed_mask(f,smg)
             group = 1 << lsb(0xFFFFFFFF & ~not_mask)
             set_smooth_group(f,smg,group)
+'''
 
 # Too slow
 def tessface_polygon_index(mesh,tess) :
@@ -665,13 +667,20 @@ def extract_triangles(mesh):
 
     If the mesh contains quads, they will be split into triangles.'''
 
+    (poly_group,group_count) = mesh.calc_smooth_groups(True)
+
     bm = bmesh.new()
     bm.from_mesh(mesh)
+    
+    bm.faces.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.verts.ensure_lookup_table()
 
+    '''
     calc_smooth_group(bm)
-
     # face must have some group, 0 is not allowed here
     smg_cr = bm.faces.layers.int["smooth_group_current"]
+    '''
 
     tri_list = []
     do_uv = mesh.tessface_uv_textures
@@ -695,7 +704,8 @@ def extract_triangles(mesh):
         # p_found, p_index = tessface_bmface_index(bm,mesh,face)
         p_found, p_index = tessface_vert_index(bm,mesh,face)
 
-        smooth_group = bm.faces[p_index][smg_cr] if p_found else 0
+        # smooth_group = bm.faces[p_index][smg_cr] if p_found else 0
+        smooth_group = poly_group[p_index] if p_found else 0
 
         if len(f_v)==3:
             new_tri = tri_wrapper((f_v[0], f_v[1], f_v[2]), face.material_index, img)
