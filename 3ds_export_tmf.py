@@ -514,7 +514,7 @@ def make_material_texture_chunk(id, images):
     mat_sub = make_percent_subchunk(id, 1)
 
     def add_image(img):
-        filename = img.filename.split('\\')[-1].split('/')[-1]
+        filename = bpy.path.basename(image.filepath)        
         mat_sub_file = _3ds_chunk(MATMAPFILE)
         mat_sub_file.add_variable("mapfile", _3ds_string(sane_name(filename)))
         mat_sub.add_subchunk(mat_sub_file)
@@ -563,7 +563,7 @@ def make_material_chunk(material, image):
         if image: images.append(image)
 
         if images:
-            material_chunk.add_subchunk(make_material_texture_chunk(MATMAP, images))
+            material_chunk.add_subchunk(make_material_texture_chunk(MAT_DIFFUSEMAP, images))
 
     return material_chunk
 
@@ -1208,7 +1208,7 @@ def do_export(filename,use_selection=False):
                             f.material_index = 0
 
         if free:
-            free_derived_objects(ob)
+            bpy_extras.io_utils.free_derived_objects(ob)
 
     # Make material chunks for all materials used in the meshes:
     for mat_and_image in materialDict.values():
