@@ -925,7 +925,7 @@ def make_mesh_chunk(mesh, materialDict, ob, name_to_id, name_to_scale, name_to_p
         # matrix_pos = (0.0,0.0,0.0)
     else:
         # this code has been left as found, Glauco Bacchi
-        matrix_pos = mathutils.Vector((name_to_pos[ob.parent.name][0]-name_to_pos[ob.name][0],name_to_pos[ob.parent.name][1]-name_to_pos[ob.name][1],name_to_pos[ob.parent.name][2]-name_to_pos[ob.name][2] )) * name_to_rot[ob.parent.name].toMatrix()
+        matrix_pos = mathutils.Vector((name_to_pos[ob.parent.name][0]-name_to_pos[ob.name][0],name_to_pos[ob.parent.name][1]-name_to_pos[ob.name][1],name_to_pos[ob.parent.name][2]-name_to_pos[ob.name][2])) * name_to_rot[ob.parent.name].to_matrix()
 
     ob_matrix = mathutils.Matrix()
     ob_matrix.identity()
@@ -1087,7 +1087,7 @@ def make_kf_obj_node(obj, name_to_id, name_to_scale, name_to_pos, name_to_rot):
         # this was originally as follows, Glauco Bacchi
         # pivot_pos = (name_to_pos[name][0],name_to_pos[name][1],name_to_pos[name][2])
     else:
-        pivot_pos = Blender.Mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) * name_to_rot[parent.name].toMatrix()
+        pivot_pos = mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) * name_to_rot[parent.name].to_matrix()
     obj_pivot_chunk = _3ds_chunk(OBJECT_PIVOT)
     obj_pivot_chunk.add_variable("pivot", _3ds_point_3d(pivot_pos))
     kf_obj_node.add_subchunk(obj_pivot_chunk)
@@ -1109,8 +1109,8 @@ def make_kf_obj_node(obj, name_to_id, name_to_scale, name_to_pos, name_to_rot):
         obj_rot = name_to_rot[name]
     else:
         obj_size = (1.0,1.0,1.0)
-        obj_pos = Blender.Mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) * name_to_rot[parent.name].toMatrix()
-        obj_rot = Blender.Mathutils.CrossQuats( name_to_rot[name], name_to_rot[parent.name].copy().inverse() )
+        obj_pos = mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) * name_to_rot[parent.name].to_matrix()
+        obj_rot = name_to_rot[name].cross(name_to_rot[parent.name].copy().inverted())
 
     kf_obj_node.add_subchunk(make_track_chunk(SCL_TRACK_TAG, obj, obj_size, obj_pos, obj_rot))
     kf_obj_node.add_subchunk(make_track_chunk(ROT_TRACK_TAG, obj, obj_size, obj_pos, obj_rot))
