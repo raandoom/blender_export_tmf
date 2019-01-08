@@ -20,7 +20,7 @@ bl_info = {
     "name": "Export 3DS for TrackMania Forever",
     "author": "Glauco Bacchi, Campbell Barton, Bob Holcomb, Richard Lärkäng, Damien McGinnes, Mark Stijnman, Sergey Savkin",
     "version": (1, 0, 5),
-    "blender": (2, 7, 9),
+    "blender": (2, 80, 0),
     "location": "File > Export > 3DS for TMF (.3ds)",
     "description": "Export 3DS model for TrackMania Forever (.3ds)",
     "warning": "",
@@ -43,12 +43,12 @@ class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     bl_label = "Export 3DS for TMF (.3ds)"
 
     filename_ext = ".3ds"
-    filter_glob = bpy.props.StringProperty(
+    filter_glob : bpy.props.StringProperty(
         default="*.3ds",
         options={'HIDDEN'},
         )
 
-    use_selection = bpy.props.BoolProperty(
+    use_selection : bpy.props.BoolProperty(
         name="Selection Only",
         description="Export selected objects only",
         default=False,
@@ -81,12 +81,12 @@ def menu_func(self, context):
 
 
 def register():
-    bpy.utils.register_module(__name__)
-    bpy.types.INFO_MT_file_export.append(menu_func)
+    bpy.utils.register_class(Export_tmf)
+    bpy.types.TOPBAR_MT_file_export.append(menu_func)
 
 def unregister():
-    bpy.utils.unregister_module(__name__)
-    bpy.types.INFO_MT_file_export.remove(menu_func)
+    bpy.utils.unregister_class(Export_tmf)
+    bpy.types.TOPBAR_MT_file_export.remove(menu_func)
 
 ######################################################
 # Data Structures
@@ -667,7 +667,7 @@ def extract_triangles(mesh):
 
     If the mesh contains quads, they will be split into triangles.'''
 
-    (poly_group,group_count) = mesh.calc_smooth_groups(True)
+    (poly_group,group_count) = mesh.calc_smooth_groups(use_bitflags=True)
 
     bm = bmesh.new()
     bm.from_mesh(mesh)
@@ -683,16 +683,18 @@ def extract_triangles(mesh):
     '''
 
     tri_list = []
-    do_uv = mesh.tessface_uv_textures
-
+    ''' FIXME
+    do_uv = mesh.uv_layers
+    '''
+    do_uv = None
     if not do_uv:
         face_uv = None
 
     img = None
-    for i, face in enumerate(mesh.tessfaces):
+    for i, face in enumerate(mesh.loop_triangles):
         f_v = face.vertices
 
-        uf = mesh.tessface_uv_textures.active.data[i] if do_uv else None
+        uf = mesh.uv_layers.active.data[i] if do_uv else None
 
         if do_uv:
             f_uv = uf.uv
@@ -808,7 +810,8 @@ def make_faces_chunk(tri_list, mesh, materialDict):
     face_chunk = _3ds_chunk(OBJECT_FACES)
     face_list = _3ds_array()
 
-    if mesh.tessface_uv_textures:
+    ''' FIXME
+    if mesh.uv_layers:
         # Gather materials used in this mesh - mat/image pairs
         unique_mats = {}
         for i, tri in enumerate(tri_list):
@@ -843,26 +846,28 @@ def make_faces_chunk(tri_list, mesh, materialDict):
             face_chunk.add_subchunk(obj_material_chunk)
 
     else:
+    '''
+    # else branch start
+    obj_material_faces = []
+    obj_material_names = []
+    for m in materials:
+        if m:
+            obj_material_names.append(_3ds_string(sane_name(m.name)))
+            obj_material_faces.append(_3ds_array())
+    n_materials = len(obj_material_names)
 
-        obj_material_faces = []
-        obj_material_names = []
-        for m in materials:
-            if m:
-                obj_material_names.append(_3ds_string(sane_name(m.name)))
-                obj_material_faces.append(_3ds_array())
-        n_materials = len(obj_material_names)
+    for i, tri in enumerate(tri_list):
+        face_list.add(_3ds_face(tri.vertex_index))
+        if (tri.mat < n_materials):
+            obj_material_faces[tri.mat].add(_3ds_ushort(i))
 
-        for i, tri in enumerate(tri_list):
-            face_list.add(_3ds_face(tri.vertex_index))
-            if (tri.mat < n_materials):
-                obj_material_faces[tri.mat].add(_3ds_ushort(i))
-
-        face_chunk.add_variable("faces", face_list)
-        for i in range(n_materials):
-            obj_material_chunk = _3ds_chunk(OBJECT_MATERIAL)
-            obj_material_chunk.add_variable("name", obj_material_names[i])
-            obj_material_chunk.add_variable("face_list", obj_material_faces[i])
-            face_chunk.add_subchunk(obj_material_chunk)
+    face_chunk.add_variable("faces", face_list)
+    for i in range(n_materials):
+        obj_material_chunk = _3ds_chunk(OBJECT_MATERIAL)
+        obj_material_chunk.add_variable("name", obj_material_names[i])
+        obj_material_chunk.add_variable("face_list", obj_material_faces[i])
+        face_chunk.add_subchunk(obj_material_chunk)
+    # else branch end
 
     smooth_chunk = _3ds_chunk(OBJECT_SMOOTH)
     for i, tri in enumerate(tri_list) :
@@ -889,22 +894,26 @@ def make_mesh_chunk(mesh, materialDict, ob, name_to_id, name_to_scale, name_to_p
     # Extract the triangles from the mesh:
     tri_list = extract_triangles(mesh)
 
-    if mesh.tessface_uv_textures:
+    ''' FIXME
+    if mesh.uv_layers:
         # Remove the face UVs and convert it to vertex UV:
         vert_array, uv_array, tri_list = remove_face_uv(mesh.vertices, tri_list)
     else:
-        # Add the vertices to the vertex array:
-        vert_array = _3ds_array()
-        for vert in mesh.vertices:
-            vert_array.add(_3ds_point_3d(vert.co))
-        # If the mesh has vertex UVs, create an array of UVs:
-        # if mesh.vertexUV:
-        #     uv_array = _3ds_array()
-        #     for vert in mesh.vertices:
-        #         uv_array.add(_3ds_point_uv(vert.uvco))
-        # else:
-        #     # no UV at all:
-        uv_array = None
+    '''
+    # else branch start
+    # Add the vertices to the vertex array:
+    vert_array = _3ds_array()
+    for vert in mesh.vertices:
+        vert_array.add(_3ds_point_3d(vert.co))
+    # If the mesh has vertex UVs, create an array of UVs:
+    # if mesh.vertexUV:
+    #     uv_array = _3ds_array()
+    #     for vert in mesh.vertices:
+    #         uv_array.add(_3ds_point_uv(vert.uvco))
+    # else:
+    #     # no UV at all:
+    uv_array = None
+    # else branch end
 
     # create the chunk:
     mesh_chunk = _3ds_chunk(OBJECT_MESH)
@@ -1118,6 +1127,16 @@ def make_kf_obj_node(obj, name_to_id, name_to_scale, name_to_pos, name_to_rot):
 
     return kf_obj_node
 
+# Broken for 2.80 at this moment
+def re_create_derived_objects(context, ob):
+    if ob.parent and ob.parent.instance_type in {'VERTS', 'FACES'}:
+        return None
+
+    if ob.instance_type != 'NONE':
+        return [(dob.instance_object.original, dob.matrix_world.copy()) for dob in context.depsgraph.object_instances if dob.parent and dob.parent.original == ob]
+    else:
+        return [(ob, ob.matrix_world)]
+
 def do_export(filename,use_selection=False):
 
     """Save the Blender scene to a 3ds file."""
@@ -1145,15 +1164,15 @@ def do_export(filename,use_selection=False):
     mesh_objects = []
 
     if use_selection:
-        objects = [ob for ob in sce.objects if ob.is_visible(sce) and ob.select]
+        objects = [ob for ob in sce.objects if ob.visible_get() and ob.select_get()]
     else:
-        objects = [ob for ob in sce.objects if ob.is_visible(sce)]
+        objects = [ob for ob in sce.objects if ob.visible_get()]
 
     empty_objects = [ ob for ob in objects if ob.type == 'EMPTY' ]
 
     for ob in objects:
         # get derived objects
-        free, derived = bpy_extras.io_utils.create_derived_objects(sce, ob)
+        derived = re_create_derived_objects(bpy.context, ob)
 
         if derived is None:
             continue
@@ -1163,11 +1182,12 @@ def do_export(filename,use_selection=False):
                 continue
 
             try:
-                data = ob_derived.to_mesh(sce, True, 'RENDER')
+                data = ob_derived.to_mesh(bpy.context.depsgraph, True)
             except:
                 data = None
 
             if data:
+                data.calc_loop_triangles()
                 # 4KEX: Removed mesh transformation. Will do this later based on parenting and other factors.
                 # so vertices are in local coordinates
                 # orig was the next line commented out
@@ -1176,12 +1196,14 @@ def do_export(filename,use_selection=False):
                 mesh_objects.append((ob_derived, data))
                 mat_ls = data.materials
                 mat_ls_len = len(mat_ls)
+                
+                ''' FIXME
                 # get material/image tuples.
-                if data.tessface_uv_textures:
+                if data.uv_layers:
                     if not mat_ls:
                         mat = mat_name = None
 
-                    for f, uf in zip(data.tessfaces, data.tessface_uv_textures.active.data):
+                    for f, uf in zip(data.loop_triangles, data.uv_layers.active.data):
                         if mat_ls:
                             mat_index = f.material_index
                             if mat_index >= mat_ls_len:
@@ -1203,12 +1225,10 @@ def do_export(filename,use_selection=False):
                             materialDict.setdefault((mat.name, None), (mat, None) )
 
                     # Why 0 Why!
-                    for f in data.tessfaces:
+                    for f in data.loop_triangles:
                         if f.material_index >= mat_ls_len:
                             f.material_index = 0
-
-        if free:
-            bpy_extras.io_utils.free_derived_objects(ob)
+                '''
 
     # Make material chunks for all materials used in the meshes:
     for mat_and_image in materialDict.values():
