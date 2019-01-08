@@ -19,7 +19,7 @@
 bl_info = {
     "name": "Export 3DS for TrackMania Forever",
     "author": "Glauco Bacchi, Campbell Barton, Bob Holcomb, Richard Lärkäng, Damien McGinnes, Mark Stijnman, Sergey Savkin",
-    "version": (1, 0, 0),
+    "version": (1, 0, 5),
     "blender": (2, 7, 9),
     "location": "File > Export > 3DS for TMF (.3ds)",
     "description": "Export 3DS model for TrackMania Forever (.3ds)",
@@ -514,7 +514,7 @@ def make_material_texture_chunk(id, images):
     mat_sub = make_percent_subchunk(id, 1)
 
     def add_image(img):
-        filename = bpy.path.basename(image.filepath)        
+        filename = bpy.path.basename(image.filepath)
         mat_sub_file = _3ds_chunk(MATMAPFILE)
         mat_sub_file.add_variable("mapfile", _3ds_string(sane_name(filename)))
         mat_sub.add_subchunk(mat_sub_file)
