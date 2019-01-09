@@ -669,12 +669,14 @@ def extract_triangles(mesh):
 
     (poly_group,group_count) = mesh.calc_smooth_groups(use_bitflags=True)
 
+    '''
     bm = bmesh.new()
     bm.from_mesh(mesh)
     
     bm.faces.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
     bm.verts.ensure_lookup_table()
+    '''
 
     '''
     calc_smooth_group(bm)
@@ -683,10 +685,7 @@ def extract_triangles(mesh):
     '''
 
     tri_list = []
-    ''' FIXME
     do_uv = mesh.uv_layers
-    '''
-    do_uv = None
     if not do_uv:
         face_uv = None
 
@@ -694,43 +693,31 @@ def extract_triangles(mesh):
     for i, face in enumerate(mesh.loop_triangles):
         f_v = face.vertices
 
-        uf = mesh.uv_layers.active.data[i] if do_uv else None
+        uf = mesh.uv_layers.active.data if do_uv else None
 
         if do_uv:
-            f_uv = uf.uv
-            img = uf.image
-            if img: img = img.name
+            f_uv = [uf[l].uv for l in face.loops]
+            # img = uf.image
+            # if img: img = img.name
 
         # find parent polygon for tessface
         # p_found, p_index = tessface_polygon_index(mesh,face)
         # p_found, p_index = tessface_bmface_index(bm,mesh,face)
-        p_found, p_index = tessface_vert_index(bm,mesh,face)
+        # p_found, p_index = tessface_vert_index(bm,mesh,face)
 
         # smooth_group = bm.faces[p_index][smg_cr] if p_found else 0
-        smooth_group = poly_group[p_index] if p_found else 0
+        # smooth_group = poly_group[p_index] if p_found else 0
+        
+        # with 2.80 api triangle knows parent
+        smooth_group = poly_group[face.polygon_index]
 
-        if len(f_v)==3:
-            new_tri = tri_wrapper((f_v[0], f_v[1], f_v[2]), face.material_index, img)
-            if (do_uv): new_tri.faceuvs = uv_key(f_uv[0]), uv_key(f_uv[1]), uv_key(f_uv[2])
-            new_tri.group = smooth_group
-            tri_list.append(new_tri)
-
-        else: #it's a quad
-            new_tri = tri_wrapper((f_v[0], f_v[1], f_v[2]), face.material_index, img)
-            new_tri_2 = tri_wrapper((f_v[0], f_v[2], f_v[3]), face.material_index, img)
-
-            if (do_uv):
-                new_tri.faceuvs= uv_key(f_uv[0]), uv_key(f_uv[1]), uv_key(f_uv[2])
-                new_tri_2.faceuvs= uv_key(f_uv[0]), uv_key(f_uv[2]), uv_key(f_uv[3])
-                
-            new_tri.group = smooth_group
-            new_tri_2.group = smooth_group
-
-            tri_list.append( new_tri )
-            tri_list.append( new_tri_2 )
-            
+        new_tri = tri_wrapper((f_v[0], f_v[1], f_v[2]), face.material_index, img)
+        if (do_uv): new_tri.faceuvs = uv_key(f_uv[0]), uv_key(f_uv[1]), uv_key(f_uv[2])
+        new_tri.group = smooth_group
+        tri_list.append(new_tri)
+    '''
     bm.free()
-
+    '''
     return tri_list
 
 def remove_face_uv(verts, tri_list):
@@ -894,26 +881,22 @@ def make_mesh_chunk(mesh, materialDict, ob, name_to_id, name_to_scale, name_to_p
     # Extract the triangles from the mesh:
     tri_list = extract_triangles(mesh)
 
-    ''' FIXME
     if mesh.uv_layers:
         # Remove the face UVs and convert it to vertex UV:
         vert_array, uv_array, tri_list = remove_face_uv(mesh.vertices, tri_list)
     else:
-    '''
-    # else branch start
-    # Add the vertices to the vertex array:
-    vert_array = _3ds_array()
-    for vert in mesh.vertices:
-        vert_array.add(_3ds_point_3d(vert.co))
-    # If the mesh has vertex UVs, create an array of UVs:
-    # if mesh.vertexUV:
-    #     uv_array = _3ds_array()
-    #     for vert in mesh.vertices:
-    #         uv_array.add(_3ds_point_uv(vert.uvco))
-    # else:
-    #     # no UV at all:
-    uv_array = None
-    # else branch end
+        # Add the vertices to the vertex array:
+        vert_array = _3ds_array()
+        for vert in mesh.vertices:
+            vert_array.add(_3ds_point_3d(vert.co))
+        # If the mesh has vertex UVs, create an array of UVs:
+        # if mesh.vertexUV:
+        #     uv_array = _3ds_array()
+        #     for vert in mesh.vertices:
+        #         uv_array.add(_3ds_point_uv(vert.uvco))
+        # else:
+        #     # no UV at all:
+        uv_array = None
 
     # create the chunk:
     mesh_chunk = _3ds_chunk(OBJECT_MESH)
