@@ -639,9 +639,16 @@ def tessface_bmface_index(bm,mesh,tess) :
                     return True,bf.index
     return False,0
 # Fastest
+# Use handmade issubset because native set.issubset() stuck for some reason
+def issubset(lh, rh):
+    for e in lh:
+        if e not in rh:
+            return False
+        return True
+
 def tessface_vert_index(bm,mesh,tess) :
     for bf in bm.verts[tess.vertices[0]].link_faces :
-        if set(tess.vertices).issubset(mesh.polygons[bf.index].vertices) :
+        if issubset(tess.vertices,mesh.polygons[bf.index].vertices) :
             return True,bf.index
     return False,0
 
