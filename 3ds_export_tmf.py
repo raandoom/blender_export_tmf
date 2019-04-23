@@ -644,7 +644,7 @@ def issubset(lh, rh):
     for e in lh:
         if e not in rh:
             return False
-        return True
+    return True
 
 def tessface_vert_index(bm,mesh,tess) :
     for bf in bm.verts[tess.vertices[0]].link_faces :
