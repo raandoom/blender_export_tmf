@@ -20,7 +20,7 @@ bl_info = {
     "name": "Export 3DS for TrackMania Forever",
     "author": "Glauco Bacchi, Campbell Barton, Bob Holcomb, Richard Lärkäng, Damien McGinnes, Mark Stijnman, Sergey Savkin",
     "version": (1, 0, 5),
-    "blender": (2, 80, 0),
+    "blender": (2, 81, 0),
     "location": "File > Export > 3DS for TMF (.3ds)",
     "description": "Export 3DS model for TrackMania Forever (.3ds)",
     "warning": "",
@@ -1165,7 +1165,7 @@ def do_export(filename,use_selection=False):
                 continue
 
             try:
-                data = ob_derived.to_mesh(bpy.context.depsgraph, True)
+                data = ob_derived.to_mesh()
             except:
                 data = None
 
