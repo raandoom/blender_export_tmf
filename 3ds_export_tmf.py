@@ -18,13 +18,13 @@
 
 bl_info = {
     "name": "Export 3DS for TrackMania Forever",
-    "author": "Glauco Bacchi, Campbell Barton, Bob Holcomb, Richard Lärkäng, Damien McGinnes, Mark Stijnman, Sergey Savkin",
-    "version": (1, 0, 5),
-    "blender": (2, 7, 9),
+    "author": "Glauco Bacchi, Campbell Barton, Bob Holcomb, Richard Lärkäng, Damien McGinnes, Mark Stijnman, Sergey Savkin, Sebastian Sille"
+    "version": (1, 1, 0),
+    "blender": (2, 80, 0),
     "location": "File > Export > 3DS for TMF (.3ds)",
     "description": "Export 3DS model for TrackMania Forever (.3ds)",
     "warning": "",
-    "wiki_url": "",
+    "doc_url": "",
     "category": "Import-Export"
 }
 
@@ -43,12 +43,12 @@ class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     bl_label = "Export 3DS for TMF (.3ds)"
 
     filename_ext = ".3ds"
-    filter_glob = bpy.props.StringProperty(
+    filter_glob: bpy.props.StringProperty(
         default="*.3ds",
         options={'HIDDEN'},
         )
 
-    use_selection = bpy.props.BoolProperty(
+    use_selection: bpy.props.BoolProperty(
         name="Selection Only",
         description="Export selected objects only",
         default=False,
@@ -78,15 +78,20 @@ class Export_tmf(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
 
 def menu_func(self, context):
     self.layout.operator(Export_tmf.bl_idname, text="3DS for TMF (.3ds)")
-
+    
+classes = (
+    Export_tmf,
+)
 
 def register():
-    bpy.utils.register_module(__name__)
-    bpy.types.INFO_MT_file_export.append(menu_func)
+    for cls in classes:
+        bpy.utils.register_module(__name__)
+    bpy.types.TOPBAR_MT_file_export.append(menu_func)
 
 def unregister():
-    bpy.utils.unregister_module(__name__)
-    bpy.types.INFO_MT_file_export.remove(menu_func)
+    bpy.types.TOPBAR_MT_file_export.remove(menu_func)
+    for cls in classes:
+        bpy.utils.unregister_module(__name__)
 
 ######################################################
 # Data Structures
@@ -191,8 +196,6 @@ def sane_name(name):
     name_mapping[name] = new_name = new_name.encode("ASCII", "replace")
     return new_name
 
-def uv_key(uv):
-    return round(uv[0], 6), round(uv[1], 6)
 
 # size defines:
 SZ_SHORT    = 2
@@ -487,6 +490,13 @@ class _3ds_chunk(object):
 # EXPORT
 ######################################################
 
+def get_material_images(material):
+    # blender utility func.
+    if material:
+        return [s for s in material.texture_paint_slots if s and s.texture.type == 'IMAGE' and s.texture.image]
+
+    return []
+
 def make_material_subchunk(id, color):
     """Make a material subchunk."""
     """Used for color subchunks, such as diffuse color or ambient color subchunks."""
@@ -549,21 +559,21 @@ def make_material_chunk(material, image):
         material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 0))
 
     else:
-        material_chunk.add_subchunk(make_material_subchunk(MATAMBIENT, [a*material.ambient for a in material.diffuse_color] ))
-        material_chunk.add_subchunk(make_material_subchunk(MATDIFFUSE, material.diffuse_color))
-        material_chunk.add_subchunk(make_material_subchunk(MATSPECULAR, material.specular_color))
+        material_chunk.add_subchunk(make_material_subchunk(MATAMBIENT, material.line_color[:3]))
+        material_chunk.add_subchunk(make_material_subchunk(MATDIFFUSE, material.diffuse_color[:3]))
+        material_chunk.add_subchunk(make_material_subchunk(MATSPECULAR, material.specular_color[:]))
         material_chunk.add_subchunk(make_percent_subchunk(MATSHINESS, material.roughness))
-        material_chunk.add_subchunk(make_percent_subchunk(MATSHIN2, material.specular_intensity))
-        material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 1-material.alpha))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHIN2, material.metallic))
+        material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 1-material.diffuse_color[3]))
 
         # 4KEX: Removed call to get images for the material. Will export UV image ONLY.
-        # images = get_material_images(material) # can be None
+        images = get_material_images(material) # can be None
         images = []
 
         if image: images.append(image)
 
         if images:
-            material_chunk.add_subchunk(make_material_texture_chunk(MAT_DIFFUSEMAP, images))
+            material_chunk.add_subchunk(make_material_texture_chunk(MAT_DIFFUSEMAP, image))
 
     return material_chunk
 
@@ -670,9 +680,9 @@ class tri_wrapper(object):
         self.group = group
 
 def extract_triangles(mesh):
-    '''Extract triangles from a mesh.
+    '''Extract triangles from a mesh.'''
 
-    If the mesh contains quads, they will be split into triangles.'''
+    mesh.calc_loop_triangles()
 
     (poly_group,group_count) = mesh.calc_smooth_groups(True)
 
@@ -690,49 +700,39 @@ def extract_triangles(mesh):
     '''
 
     tri_list = []
-    do_uv = mesh.tessface_uv_textures
+    do_uv = mesh.uv_layers
 
     if not do_uv:
         face_uv = None
 
     img = None
-    for i, face in enumerate(mesh.tessfaces):
+    for i, face in enumerate(mesh.loop_triangles):
         f_v = face.vertices
 
-        uf = mesh.tessface_uv_textures.active.data[i] if do_uv else None
+        uf = mesh.uv_layers.active.data if do_uv else None
 
         if do_uv:
-            f_uv = uf.uv
-            img = uf.image
-            if img: img = img.name
+            tri = mesh.loop_triangles
+            t_lp = tri.loops
+            #img = uf.image
+            #if img: img = img.name
+            
+        def v_key(loop):
+            return (uf[loop].uv[:])
 
-        # find parent polygon for tessface
-        # p_found, p_index = tessface_polygon_index(mesh,face)
-        # p_found, p_index = tessface_bmface_index(bm,mesh,face)
-        p_found, p_index = tessface_vert_index(bm,mesh,face)
+        # find parent polygon for triangle
+        # p_found, p_index = face_polygon_index(mesh,face)
+        # p_found, p_index = face_bmface_index(bm,mesh,face)
+        p_found, p_index = face_vert_index(bm,mesh,face)
 
         # smooth_group = bm.faces[p_index][smg_cr] if p_found else 0
         smooth_group = poly_group[p_index] if p_found else 0
 
         if len(f_v)==3:
             new_tri = tri_wrapper((f_v[0], f_v[1], f_v[2]), face.material_index, img)
-            if (do_uv): new_tri.faceuvs = uv_key(f_uv[0]), uv_key(f_uv[1]), uv_key(f_uv[2])
+            if (do_uv): new_tri.faceuvs = v_key(t_lp[0]), v_key(t_lp[1]), v_key(t_lp[2])
             new_tri.group = smooth_group
             tri_list.append(new_tri)
-
-        else: #it's a quad
-            new_tri = tri_wrapper((f_v[0], f_v[1], f_v[2]), face.material_index, img)
-            new_tri_2 = tri_wrapper((f_v[0], f_v[2], f_v[3]), face.material_index, img)
-
-            if (do_uv):
-                new_tri.faceuvs= uv_key(f_uv[0]), uv_key(f_uv[1]), uv_key(f_uv[2])
-                new_tri_2.faceuvs= uv_key(f_uv[0]), uv_key(f_uv[2]), uv_key(f_uv[3])
-                
-            new_tri.group = smooth_group
-            new_tri_2.group = smooth_group
-
-            tri_list.append( new_tri )
-            tri_list.append( new_tri_2 )
             
     bm.free()
 
@@ -815,7 +815,7 @@ def make_faces_chunk(tri_list, mesh, materialDict):
     face_chunk = _3ds_chunk(OBJECT_FACES)
     face_list = _3ds_array()
 
-    if mesh.tessface_uv_textures:
+    if mesh.uv_layers:
         # Gather materials used in this mesh - mat/image pairs
         unique_mats = {}
         for i, tri in enumerate(tri_list):
@@ -932,7 +932,7 @@ def make_mesh_chunk(mesh, materialDict, ob, name_to_id, name_to_scale, name_to_p
         # matrix_pos = (0.0,0.0,0.0)
     else:
         # this code has been left as found, Glauco Bacchi
-        matrix_pos = mathutils.Vector((name_to_pos[ob.parent.name][0]-name_to_pos[ob.name][0],name_to_pos[ob.parent.name][1]-name_to_pos[ob.name][1],name_to_pos[ob.parent.name][2]-name_to_pos[ob.name][2])) * name_to_rot[ob.parent.name].to_matrix()
+        matrix_pos = mathutils.Vector((name_to_pos[ob.parent.name][0]-name_to_pos[ob.name][0],name_to_pos[ob.parent.name][1]-name_to_pos[ob.name][1],name_to_pos[ob.parent.name][2]-name_to_pos[ob.name][2])) @ name_to_rot[ob.parent.name].to_matrix()
 
     ob_matrix = mathutils.Matrix()
     ob_matrix.identity()
@@ -1116,7 +1116,7 @@ def make_kf_obj_node(obj, name_to_id, name_to_scale, name_to_pos, name_to_rot):
         obj_rot = name_to_rot[name]
     else:
         obj_size = (1.0,1.0,1.0)
-        obj_pos = mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) * name_to_rot[parent.name].to_matrix()
+        obj_pos = mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) @ name_to_rot[parent.name].to_matrix()
         obj_rot = name_to_rot[name].cross(name_to_rot[parent.name].copy().inverted())
 
     kf_obj_node.add_subchunk(make_track_chunk(SCL_TRACK_TAG, obj, obj_size, obj_pos, obj_rot))
@@ -1130,6 +1130,7 @@ def do_export(filename,use_selection=False):
     """Save the Blender scene to a 3ds file."""
 
     sce = bpy.context.scene
+    layer = bpy.context.view_layer
 
     # Initialize the main chunk (primary):
     primary = _3ds_chunk(PRIMARY)
@@ -1152,9 +1153,9 @@ def do_export(filename,use_selection=False):
     mesh_objects = []
 
     if use_selection:
-        objects = [ob for ob in sce.objects if ob.is_visible(sce) and ob.select]
+        objects = [ob for ob in sce.objects if not ob.hide_viewport and ob.select_get(view_layer=layer)]
     else:
-        objects = [ob for ob in sce.objects if ob.is_visible(sce)]
+        objects = [ob for ob in sce.objects if not ob.hide_viewport]
 
     empty_objects = [ ob for ob in objects if ob.type == 'EMPTY' ]
 
@@ -1170,7 +1171,7 @@ def do_export(filename,use_selection=False):
                 continue
 
             try:
-                data = ob_derived.to_mesh(sce, True, 'RENDER')
+                data = ob_derived.to_mesh()
             except:
                 data = None
 
@@ -1184,11 +1185,11 @@ def do_export(filename,use_selection=False):
                 mat_ls = data.materials
                 mat_ls_len = len(mat_ls)
                 # get material/image tuples.
-                if data.tessface_uv_textures:
+                if data.uv_layers:
                     if not mat_ls:
                         mat = mat_name = None
 
-                    for f, uf in zip(data.tessfaces, data.tessface_uv_textures.active.data):
+                    for f, uf in zip(data.polygons, data.uv_layers.active.data):
                         if mat_ls:
                             mat_index = f.material_index
                             if mat_index >= mat_ls_len:
@@ -1198,11 +1199,11 @@ def do_export(filename,use_selection=False):
                             else:   mat_name = None
                         # else there alredy set to none
 
-                        img = uf.image
-                        if img: img_name = img.name
-                        else:   img_name = None
+                        #img = uf.image
+                        #if img: img_name = img.name
+                        #else:   img_name = None
 
-                        materialDict.setdefault((mat_name, img_name), (mat, img))
+                        materialDict.setdefault((mat_name, None), (mat, None))
 
                 else:
                     for mat in mat_ls:
@@ -1210,7 +1211,7 @@ def do_export(filename,use_selection=False):
                             materialDict.setdefault((mat.name, None), (mat, None) )
 
                     # Why 0 Why!
-                    for f in data.tessfaces:
+                    for f in data.polygons:
                         if f.material_index >= mat_ls_len:
                             f.material_index = 0
 
