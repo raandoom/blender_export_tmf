@@ -634,13 +634,13 @@ def calc_smooth_group(bm) :
 '''
 
 # Too slow
-def tessface_polygon_index(mesh,tess) :
+def face_polygon_index(mesh,tess) :
     for po in mesh.polygons :
         if set(tess.vertices).issubset(po.vertices) :
             return True,po.index
     return False,0
 # Faster
-def tessface_bmface_index(bm,mesh,tess) :
+def face_bmface_index(bm,mesh,tess) :
     # Take any point from tessface and iterate over linked faces of BMVert
     for bv in bm.verts :
         if bv.co == tess.vertices[0] :
@@ -656,7 +656,7 @@ def issubset(lh, rh):
             return False
     return True
 
-def tessface_vert_index(bm,mesh,tess) :
+def face_vert_index(bm,mesh,tess) :
     for bf in bm.verts[tess.vertices[0]].link_faces :
         if issubset(tess.vertices,mesh.polygons[bf.index].vertices) :
             return True,bf.index
