@@ -487,6 +487,13 @@ class _3ds_chunk(object):
 # EXPORT
 ######################################################
 
+def get_material_images(material):
+    # blender utility func.
+    if material:
+        return [s for s in material.texture_paint_slots if s and s.texture.type == 'IMAGE' and s.texture.image]
+
+    return []
+
 def make_material_subchunk(id, color):
     """Make a material subchunk."""
     """Used for color subchunks, such as diffuse color or ambient color subchunks."""
@@ -549,21 +556,21 @@ def make_material_chunk(material, image):
         material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 0))
 
     else:
-        material_chunk.add_subchunk(make_material_subchunk(MATAMBIENT, [a*material.ambient for a in material.diffuse_color] ))
-        material_chunk.add_subchunk(make_material_subchunk(MATDIFFUSE, material.diffuse_color))
+        material_chunk.add_subchunk(make_material_subchunk(MATAMBIENT, material.line_color[:3]))
+        material_chunk.add_subchunk(make_material_subchunk(MATDIFFUSE, material.diffuse_color[:3]))
         material_chunk.add_subchunk(make_material_subchunk(MATSPECULAR, material.specular_color))
         material_chunk.add_subchunk(make_percent_subchunk(MATSHINESS, material.roughness))
-        material_chunk.add_subchunk(make_percent_subchunk(MATSHIN2, material.specular_intensity))
-        material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 1-material.alpha))
+        material_chunk.add_subchunk(make_percent_subchunk(MATSHIN2, material.metallic))
+        material_chunk.add_subchunk(make_percent_subchunk(MATTRANS, 1-material.diffuse_color[3]))
 
         # 4KEX: Removed call to get images for the material. Will export UV image ONLY.
-        # images = get_material_images(material) # can be None
+        images = get_material_images(material) # can be None
         images = []
 
         if image: images.append(image)
 
         if images:
-            material_chunk.add_subchunk(make_material_texture_chunk(MAT_DIFFUSEMAP, images))
+            material_chunk.add_subchunk(make_material_texture_chunk(MAT_DIFFUSEMAP, image))
 
     return material_chunk
 
@@ -797,7 +804,7 @@ def make_faces_chunk(tri_list, mesh, materialDict):
     face_chunk = _3ds_chunk(OBJECT_FACES)
     face_list = _3ds_array()
 
-    ''' FIXME
+    ''' FIXME '''
     if mesh.uv_layers:
         # Gather materials used in this mesh - mat/image pairs
         unique_mats = {}
@@ -833,7 +840,7 @@ def make_faces_chunk(tri_list, mesh, materialDict):
             face_chunk.add_subchunk(obj_material_chunk)
 
     else:
-    '''
+   
     # else branch start
     obj_material_faces = []
     obj_material_names = []
@@ -917,7 +924,7 @@ def make_mesh_chunk(mesh, materialDict, ob, name_to_id, name_to_scale, name_to_p
         # matrix_pos = (0.0,0.0,0.0)
     else:
         # this code has been left as found, Glauco Bacchi
-        matrix_pos = mathutils.Vector((name_to_pos[ob.parent.name][0]-name_to_pos[ob.name][0],name_to_pos[ob.parent.name][1]-name_to_pos[ob.name][1],name_to_pos[ob.parent.name][2]-name_to_pos[ob.name][2])) * name_to_rot[ob.parent.name].to_matrix()
+        matrix_pos = mathutils.Vector((name_to_pos[ob.parent.name][0]-name_to_pos[ob.name][0],name_to_pos[ob.parent.name][1]-name_to_pos[ob.name][1],name_to_pos[ob.parent.name][2]-name_to_pos[ob.name][2])) @ name_to_rot[ob.parent.name].to_matrix()
 
     ob_matrix = mathutils.Matrix()
     ob_matrix.identity()
@@ -1079,7 +1086,7 @@ def make_kf_obj_node(obj, name_to_id, name_to_scale, name_to_pos, name_to_rot):
         # this was originally as follows, Glauco Bacchi
         # pivot_pos = (name_to_pos[name][0],name_to_pos[name][1],name_to_pos[name][2])
     else:
-        pivot_pos = mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) * name_to_rot[parent.name].to_matrix()
+        pivot_pos = mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) @ name_to_rot[parent.name].to_matrix()
     obj_pivot_chunk = _3ds_chunk(OBJECT_PIVOT)
     obj_pivot_chunk.add_variable("pivot", _3ds_point_3d(pivot_pos))
     kf_obj_node.add_subchunk(obj_pivot_chunk)
@@ -1101,7 +1108,7 @@ def make_kf_obj_node(obj, name_to_id, name_to_scale, name_to_pos, name_to_rot):
         obj_rot = name_to_rot[name]
     else:
         obj_size = (1.0,1.0,1.0)
-        obj_pos = mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) * name_to_rot[parent.name].to_matrix()
+        obj_pos = mathutils.Vector(((name_to_pos[name][0]-name_to_pos[parent.name][0]),(name_to_pos[name][1]-name_to_pos[parent.name][1]),(name_to_pos[name][2]-name_to_pos[parent.name][2]))) @ name_to_rot[parent.name].to_matrix()
         obj_rot = name_to_rot[name].cross(name_to_rot[parent.name].copy().inverted())
 
     kf_obj_node.add_subchunk(make_track_chunk(SCL_TRACK_TAG, obj, obj_size, obj_pos, obj_rot))
@@ -1125,6 +1132,7 @@ def do_export(filename,use_selection=False):
     """Save the Blender scene to a 3ds file."""
 
     sce = bpy.context.scene
+    layer = bpy.context.view_layer
 
     # Initialize the main chunk (primary):
     primary = _3ds_chunk(PRIMARY)
@@ -1147,9 +1155,9 @@ def do_export(filename,use_selection=False):
     mesh_objects = []
 
     if use_selection:
-        objects = [ob for ob in sce.objects if ob.visible_get() and ob.select_get()]
+        objects = [ob for ob in sce.objects if not ob.hide_viewport and ob.select_get(view_layer=layer)]
     else:
-        objects = [ob for ob in sce.objects if ob.visible_get()]
+        objects = [ob for ob in sce.objects if not ob.hide_viewport]
 
     empty_objects = [ ob for ob in objects if ob.type == 'EMPTY' ]
 
@@ -1180,13 +1188,13 @@ def do_export(filename,use_selection=False):
                 mat_ls = data.materials
                 mat_ls_len = len(mat_ls)
                 
-                ''' FIXME
+                ''' FIXME '''
                 # get material/image tuples.
                 if data.uv_layers:
                     if not mat_ls:
                         mat = mat_name = None
 
-                    for f, uf in zip(data.loop_triangles, data.uv_layers.active.data):
+                    for f, uf in zip(data.polygons, data.uv_layers.active.data):
                         if mat_ls:
                             mat_index = f.material_index
                             if mat_index >= mat_ls_len:
@@ -1195,12 +1203,13 @@ def do_export(filename,use_selection=False):
                             if mat: mat_name = mat.name
                             else:   mat_name = None
                         # else there alredy set to none
+                        
+                        # image is no longer property of meshUV
+                        #img = uf.image
+                        #if img: img_name = img.name
+                        #else:   img_name = None
 
-                        img = uf.image
-                        if img: img_name = img.name
-                        else:   img_name = None
-
-                        materialDict.setdefault((mat_name, img_name), (mat, img))
+                        materialDict.setdefault((mat_name, None), (mat, None))
 
                 else:
                     for mat in mat_ls:
@@ -1208,10 +1217,10 @@ def do_export(filename,use_selection=False):
                             materialDict.setdefault((mat.name, None), (mat, None) )
 
                     # Why 0 Why!
-                    for f in data.loop_triangles:
+                    for f in data.polygons:
                         if f.material_index >= mat_ls_len:
                             f.material_index = 0
-                '''
+                
 
     # Make material chunks for all materials used in the meshes:
     for mat_and_image in materialDict.values():
