@@ -1047,7 +1047,7 @@ def make_kf_obj_node(obj, name_to_id, name_to_scale, name_to_pos, name_to_rot):
     # object node header:
     obj_node_header_chunk = _3ds_chunk(OBJECT_NODE_HDR)
     # object name:
-    if obj.type == 'Empty' and False:	#Forcing to use the real name for empties 4KEX
+    if obj.type == 'Empty' and False:   #Forcing to use the real name for empties 4KEX
         # Empties are called "$$$DUMMY" and use the OBJECT_INSTANCE_NAME chunk
         # for their 3name (see below):
         obj_node_header_chunk.add_variable("name", _3ds_string("$$$DUMMY"))
@@ -1085,7 +1085,7 @@ def make_kf_obj_node(obj, name_to_id, name_to_scale, name_to_pos, name_to_rot):
     kf_obj_node.add_subchunk(obj_pivot_chunk)
 
     # Empty objects need to have an extra chunk for the instance name:
-    if obj.type == 'Empty' and False:	#Will use a real object name for empties for now 4KEX
+    if obj.type == 'Empty' and False:   #Will use a real object name for empties for now 4KEX
         obj_instance_name_chunk = _3ds_chunk(OBJECT_INSTANCE_NAME)
         obj_instance_name_chunk.add_variable("name", _3ds_string(sane_name(name)))
         kf_obj_node.add_subchunk(obj_instance_name_chunk)
@@ -1170,12 +1170,12 @@ def do_export(filename,use_selection=False):
                 data = None
 
             if data:
-                data.calc_loop_triangles()
                 # 4KEX: Removed mesh transformation. Will do this later based on parenting and other factors.
                 # so vertices are in local coordinates
                 # orig was the next line commented out
                 data.transform(mat)
                 # data.normal_update()
+                data.calc_loop_triangles()
                 mesh_objects.append((ob_derived, data))
                 mat_ls = data.materials
                 mat_ls_len = len(mat_ls)
